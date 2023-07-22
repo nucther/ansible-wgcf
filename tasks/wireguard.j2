@@ -1,0 +1,10 @@
+[Interface]
+PrivateKey = {{ wgkey.stdout }}
+Address = {{ wgcf.config.interface.addresses.v4 }}, {{ wgcf.config.interface.addresses.v6 }}  
+Table = off
+
+[Peer]
+PublicKey = {{ wgcf.config.peers[0].public_key }}
+AllowedIps = ::/1, 0.0.0.0/1
+Endpoint = {{ wgcf.config.peers[0].endpoint.host }}
+PersistentKeepAlive = 60

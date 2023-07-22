@@ -1,0 +1,78 @@
+---
+- name: Install required 
+  become: yes
+  ansible.builtin.apt:
+    pkg:
+      - curl
+    state: latest 
+
+- name: Generate wg private key
+  ansible.builtin.shell: "wg genkey"
+  register: wgkey
+
+- name: Generate wg public key 
+  ansible.builtin.shell: "echo '{{ wgkey.stdout }}' | wg pubkey"
+  register: wgpub
+
+- name: Generate TOS date
+  ansible.builtin.shell: "echo $(date +\"%Y-%m-%dT%H:%M:%S.000Z\")"
+  register: tos
+
+- name: Set Warp for personal
+  set_fact:
+    url: "https://api.cloudflareclient.com"
+  when: isTeam == "n" or isTeam == "N"
+
+- name: Set Warp for Team
+  set_fact:
+    url: "https://zero-trust-client.cloudflareclient.com"
+  when: isTeam == "y" or isTeam == "Y"
+
+- name: Login to Team
+  ansible.builtin.shell: "curl -sIL https://{{ organization }}.cloudflareaccess.com/warp --header 'CF-Access-Client-Id: {{ access_id }}' --header 'CF-Access-Client-Secret: {{ access_secret }}' | grep cookie | awk -F ';' '{print $1}' | awk -F '=' '{print $2}'"
+  register: cfToken 
+  when: isTeam == "y" or isTeam == "Y"
+
+- name: Generate ID
+  set_fact:
+    device_id: "{{ lookup('community.general.random_string', length=12) }}"
+
+- name: Register device to Warp
+  ansible.builtin.shell: "curl -X POST {{ url }}/v0/reg --header 'CF-Client-Version: a-6.28' --header 'User-Agent: okhttp/3.12.1' --header 'Content-Type: application/json' --header 'Cf-Access-Jwt-Assertion:{{ cfToken.stdout }}' --data '{\"name\":\"{{ ansible_facts['hostname'] }}\",\"locale\":\"en_US\",\"tos\":\"{{ tos.stdout }}\",\"model\":\"PC\",\"warp_enabled\": true,\"key\":\"{{ wgpub.stdout }}\"}'"
+  register: reg_device
+  when: isTeam == "y" or isTeam == "Y"
+
+- name: set variables client_device
+  set_fact:
+    client_device: "{{ reg_device.stdout | from_json }}"
+
+- name: Fix data for Team Warp 
+  set_fact:
+    client_device: "{{ client_device.result }}"
+
+- name: Get Device Config
+  ansible.builtin.shell: "curl -X PATCH {{ url }}/v0/reg/{{ client_device.id }} --header 'Authorization: Bearer {{ client_device.token }}' --data '{\"key\":\"{{ wgpub.stdout}}\",\"type\":\"Linux\"}'"
+  register: device_config
+
+- name: set variables wgcf
+  set_fact:
+    wgcf: "{{ device_config.stdout | from_json }}"
+
+- name: Fix data for Team Warp 
+  set_fact:
+    wgcf: "{{ wgcf.result }}"
+
+- name: generate wg config
+  become: yes
+  ansible.builtin.template:
+    src: wireguard.j2
+    dest: /etc/wireguard/wgcf.conf
+
+- name: Information
+  debug:
+    msg:
+      - "Config file already saved inside /etc/wireguard/wgcf.conf"
+      - "This config isn't enable yet, so please enable manually"
+      - "Do to limitation from API, can't get private IP from Device Team"
+      - "================================================================"
+      - "Happy configure your Cloudflare Ansible Wireguard Config"

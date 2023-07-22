@@ -1,0 +1,7 @@
+---
+- name: Install Wireguard 
+  become: yes 
+  ansible.builtin.apt:
+    name: wireguard
+    update_cache: true
+    state: latest

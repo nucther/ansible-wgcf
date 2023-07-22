@@ -1,0 +1,11 @@
+---
+- hosts: all
+  gather_facts: true
+  vars_prompt:
+    - name: isTeam
+      prompt: "Setup Cloudflare Warp as Team? [Y/n]"
+      default: "Y"
+
+  tasks:
+    - import_tasks: tasks/wireguard.yaml
+    - import_tasks: tasks/cloudflare-wg.yaml
