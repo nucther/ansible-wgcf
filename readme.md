@@ -18,13 +18,13 @@ all:
 then create Vars files example: 
 
 ```
-accesss_id: [CF-Access-Client-Id]
-access_secret: [CF-Access-Client-Secret]
-organization: [Your team organization subdomain]
+cf_api_token: [ Clouflare API Token with permission Access: Service Tokens:Edit, Zero Trust:Read ]
+organization_id: [ Your organiation id, can grab from team url ]
+organization_name: [Your team organization subdomain]
 
 ```
-you can get Client ID and Client Secret from this tutorial https://developers.cloudflare.com/cloudflare-one/identity/service-tokens/
 
+you can generate cloudflare api token from here https://dash.cloudflare.com/profile/api-tokens
 
 next step run ansible-playbook command. for me I use this command 
 

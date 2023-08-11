@@ -1,10 +1,19 @@
+#DEVID: {{ client_device.id  }}
+#TOKEN: {%if client_device.token is defined  %}{{ client_device.token }}{% else %}{{ token_id }}{% endif %}
+
 [Interface]
-PrivateKey = {{ wgkey.stdout }}
-Address = {{ wgcf.config.interface.addresses.v4 }}, {{ wgcf.config.interface.addresses.v6 }}  
-Table = off
+PrivateKey = {% if wgPrivKey.stdout is defined %}{{ wgPrivKey.stdout }}{% else %}{{ wgSavedPrivKey.stdout }}{% endif %}
+
+Address = {{ client_device.config.interface.addresses.v4 }}, {{ client_device.config.interface.addresses.v6 }}{% if warp.ipv4 %},{{ warp.ipv4 }}/10,{{ warp.ipv6 }}/8{% endif %}
+
+Table = 888
+PostUp = ip rule add to 100.64.0.0/10 lookup 888 
+PostUp = ip -6 rule add to fd00::/8 lookup 888 
+PostDown = ip rule del to 100.64.0.0/10 lookup 888
+PostDown = ip -6 rule del to fd00::/8 lookup 888 
 
 [Peer]
-PublicKey = {{ wgcf.config.peers[0].public_key }}
-AllowedIps = ::/1, 0.0.0.0/1
-Endpoint = {{ wgcf.config.peers[0].endpoint.host }}
+PublicKey = {{ client_device.config.peers[0].public_key }}
+AllowedIps = ::/0, 0.0.0.0/0
+Endpoint = {{ client_device.config.peers[0].endpoint.host }}
 PersistentKeepAlive = 60

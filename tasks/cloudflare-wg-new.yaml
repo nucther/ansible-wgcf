@@ -1,0 +1,127 @@
+---
+- name: Install requirement
+  become: yes 
+  ansible.builtin.apt:
+    pkg: 
+      - wireguard
+      - curl 
+
+- set_fact:
+    api_url: "https://api.cloudflare.com/client/v4"
+    warp_url: "https://zero-trust-client.cloudflareclient.com"
+
+- name: Preparation
+  block:
+    - name: Service Auth
+      ansible.builtin.shell: "curl -X POST {{ api_url }}/accounts/{{ organization_id }}/access/service_tokens --json '{\"duration\": \"1h\", \"name\":\"{{ ansible_facts['hostname'] }}\"}' -H 'Authorization: Bearer {{ cf_api_token }}'"
+      register: serviceAuthRaw
+    
+    - set_fact:
+        serviceAuth: "{{ serviceAuthRaw.stdout | from_json }}"
+    - set_fact:
+        sa_client_id: "{{ serviceAuth.result.client_id }}"
+        sa_client_secret: "{{ serviceAuth.result.client_secret }}"
+
+    - debug:
+        msg: "{{ sa_client_id }}"
+
+- name: Generate Wireguard Config 
+  block:
+    - name: Get Dev ID 
+      become: yes
+      ansible.builtin.shell: "cat  /etc/wireguard/wgcf.conf | grep DEVID | awk '{print $2}'"
+      register: wgIDRaw
+
+    - name: Get Token ID 
+      become: yes
+      ansible.builtin.shell: "cat  /etc/wireguard/wgcf.conf | grep TOKEN | awk '{print $2}'"
+      register: tokenIDRaw
+
+    - name: Get Private Key
+      become: yes
+      ansible.builtin.shell: "cat  /etc/wireguard/wgcf.conf | grep PrivateKey | awk -F '= ' '{print $2}'"
+      register: wgSavedPrivKey
+
+    - name: Generate TOS date
+      ansible.builtin.shell: "echo $(date +\"%Y-%m-%dT%H:%M:%S.000Z\")"
+      register: tos
+
+    - set_fact:
+        wg_id: "{{ wgIDRaw.stdout }}"
+        token_id: "{{ tokenIDRaw.stdout }}"
+        tos: "{{ tos.stdout }}"
+        install_id: "{{ lookup('community.general.random_string', length=12, special=false) }}"
+
+    - set_fact:
+        fcm_token: "{{ install_id }}:APA91b{{ lookup('community.general.random_string', length=20, special=false) }}"
+
+    - name: Generate WG Private Key
+      ansible.builtin.shell: "wg genkey"
+      register: wgPrivKey
+      when: wg_id == ""
+    
+    - name: Generate WG Public Key 
+      ansible.builtin.shell: "echo '{{ wgPrivKey.stdout }}' | wg pubkey"
+      register: wgPubKey
+      when: wg_id == ""
+
+    - name: Login to Warp Team 
+      ansible.builtin.shell: "curl -I https://{{ organization_name }}.cloudflareaccess.com/warp -H 'CF-Access-Client-Id: {{ sa_client_id }}' -H 'CF-Access-Client-Secret: {{ sa_client_secret }}' | grep cookie | awk -F ';' '{print $1}' | awk -F '=' '{print $2}'"
+      register: access_token
+      when: wg_id == ""
+
+    - name: Register device to cloudflare 
+      ansible.builtin.shell: "curl -X POST {{ warp_url }}/v0/reg --header 'User-Agent: okhttp/3.12.1' --header 'Content-Type: application/json' --header 'Cf-Access-Jwt-Assertion: {{ access_token.stdout }}' --header 'CF-Client-Version: a-6.28' --data '{\"name\":\"{{ ansible_facts['hostname'] }}\",\"locale\":\"en_US\",\"tos\":\"{{ tos }}\",\"model\":\"PC\",\"warp_enabled\":true,\"key\":\"{{ wgPubKey.stdout }}\",\"serial_number\":\"{{ install_id }}\",\"install_id\":\"{{ install_id }}\",\"fcm_token\":\"{{ fcm_token }}\"}'"
+      register: regDeviceRaw
+      when: wg_id == ""
+
+    - name: Get device information
+      ansible.builtin.shell: "curl {{ warp_url }}/v0/reg/{{ wg_id }} -H 'Authorization: Bearer {{ token_id }}'"  
+      register: regDeviceRaw2
+      when: token_id != ""
+
+    - set_fact:
+        regDev: "{{ regDeviceRaw.stdout if regDeviceRaw.stdout is defined else regDeviceRaw2.stdout | from_json }}"
+    
+    - name: Failed
+      ansible.builtin.fail: 
+        msg: "Failed when register device to cloudflare warp {{ regDev }}"
+      when: regDev.success == false 
+
+    - set_fact: 
+        client_device: "{{ regDev.result }}"
+      when: regDev.success == true
+
+    - name: Get Warp Device IP Address
+      ansible.builtin.shell: "curl {{ api_url }}/accounts/{{ organization_id }}/devices/{{ client_device.id | replace('t.','') }}/ip -H 'Authorization: Bearer {{ cf_api_token }}'" 
+      register: warpIPRaw
+      when: client_device.id != "" 
+
+    - set_fact:
+        warpIP: "{{ warpIPRaw.stdout | from_json }}"
+      when: client_device.id != "" 
+
+    - set_fact:
+        warp: "{{ warpIP.result.result }}"
+      when: warpIP.success == true 
+
+    - name: Genereate Wireguard Config 
+      become: yes
+      ansible.builtin.template:
+        src: wireguard.j2
+        dest: /etc/wireguard/wgcf.conf
+
+    - name: Start Wireguard 
+      become: yes 
+      ansible.builtin.systemd:
+        name: wg-quick@wgcf 
+        state: restarted
+
+  rescue:
+    - debug: 
+        msg: "Register device to Cloudflare Warp failed, Please try again."
+
+  always:
+    - name: Delete Service Auth 
+      ansible.builtin.shell: "curl -X DELETE {{ api_url }}/accounts/{{ organization_id }}/access/service_tokens/{{ serviceAuth.result.id }} -H 'Authorization: Bearer {{ cf_api_token }}'"
+      

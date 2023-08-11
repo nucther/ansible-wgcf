@@ -6,67 +6,128 @@
       - curl
     state: latest 
 
+- name: check config
+  block:
+    - name: DeviceID {{ inventory_hostname }}
+      become: yes 
+      ansible.builtin.shell: "cat /etc/wireguard/wgcf.conf | grep DEVID | awk '{print $2}'"
+      register: deviceID
+    - name: Token {{ inventory_hostname }}
+      become: yes 
+      ansible.builtin.shell: "cat /etc/wireguard/wgcf.conf | grep TOKEN | awk '{print $2}'"
+      register: tokenID
+    - name: Gateway ID {{ inventory_hostname }}
+      become: yes 
+      ansible.builtin.shell: "cat /etc/wireguard/wgcf.conf | grep GWID | awk '{print $2}'"
+      register: gwID
+    - set_fact:
+        deviceID: "{{ deviceID.stdout }}"
+        tokenID: "{{ tokenID.stdout }}"
+        gwID: "{{ gwID.stdout }}"
+
 - name: Generate wg private key
   ansible.builtin.shell: "wg genkey"
   register: wgkey
+  when: deviceID == ""
 
 - name: Generate wg public key 
   ansible.builtin.shell: "echo '{{ wgkey.stdout }}' | wg pubkey"
   register: wgpub
+  when: deviceID == ""
+
 
 - name: Generate TOS date
   ansible.builtin.shell: "echo $(date +\"%Y-%m-%dT%H:%M:%S.000Z\")"
   register: tos
+  when: deviceID == ""
+
 
 - name: Set Warp for personal
   set_fact:
     url: "https://api.cloudflareclient.com"
-  when: isTeam == "n" or isTeam == "N"
+  when: not isTeam
 
 - name: Set Warp for Team
   set_fact:
     url: "https://zero-trust-client.cloudflareclient.com"
-  when: isTeam == "y" or isTeam == "Y"
+  when: isTeam
 
 - name: Login to Team
   ansible.builtin.shell: "curl -sIL https://{{ organization }}.cloudflareaccess.com/warp --header 'CF-Access-Client-Id: {{ access_id }}' --header 'CF-Access-Client-Secret: {{ access_secret }}' | grep cookie | awk -F ';' '{print $1}' | awk -F '=' '{print $2}'"
   register: cfToken 
-  when: isTeam == "y" or isTeam == "Y"
+  when: isTeam
+
+- name: Get Account Details  
+  ansible.builtin.shell: "curl {{ url}}/v0/reg/{{ deviceID }} --header 'CF-Client-Version: a-6.28' --header 'User-Agent: okhttp/3.12.1' --header 'Content-Type: application/json' --header 'Authorization: Bearer {{ tokenID }}'"
+  register: teamID
+  when: deviceID != "" and tokenID != ""  
+
+- set_fact:
+    teamID: "{{ teamID.stdout | from_json }}"
+  when: deviceID != "" and tokenID != ""  
+
+- debug:
+    msg: "{{ teamID }}"
+  when: deviceID != "" and tokenID != ""  
+
+- name: Test
+  ansible.builtin.shell: "curl {{ url }}/v4/accounts/{{ teamID.result.account.id }}/warp/{{ deviceID | replace('t.','') }} --header 'CF-Client-Version: a-6.28' --header 'User-Agent: okhttp/3.12.1' --header 'Content-Type: application/json' --header 'Authorization: Bearer {{ cf_api_token }}'"
+  register: test
+  when: deviceID != "" and tokenID != ""  
+
+- name: debug
+  debug: 
+    msg: "{{ test }}"
+  when: deviceID != "" and tokenID != ""  
+
 
 - name: Generate ID
   set_fact:
-    device_id: "{{ lookup('community.general.random_string', length=12) }}"
+    origin_id: "{{ lookup('community.general.random_string', length=12) }}"
 
 - name: Register device to Warp
-  ansible.builtin.shell: "curl -X POST {{ url }}/v0/reg --header 'CF-Client-Version: a-6.28' --header 'User-Agent: okhttp/3.12.1' --header 'Content-Type: application/json' --header 'Cf-Access-Jwt-Assertion:{{ cfToken.stdout }}' --data '{\"name\":\"{{ ansible_facts['hostname'] }}\",\"locale\":\"en_US\",\"tos\":\"{{ tos.stdout }}\",\"model\":\"PC\",\"warp_enabled\": true,\"key\":\"{{ wgpub.stdout }}\"}'"
+  ansible.builtin.shell: "curl -X POST {{ url }}/v0/reg --header 'CF-Client-Version: a-6.28' --header 'User-Agent: okhttp/3.12.1' --header 'Content-Type: application/json' --header 'Cf-Access-Jwt-Assertion:{{ cfToken.stdout }}' --data '{\"name\":\"{{ ansible_facts['hostname'] }}\",\"locale\":\"en_US\",\"tos\":\"{{ tos.stdout }}\",\"model\":\"PC\",\"warp_enabled\": true,\"key\":\"{{ wgpub.stdout }}\",\"serial_number\":\"{{ origin_id }}\"}'"
   register: reg_device
-  when: isTeam == "y" or isTeam == "Y"
+  when: isTeam and deviceID == ""
 
 - name: set variables client_device
   set_fact:
     client_device: "{{ reg_device.stdout | from_json }}"
+  when: deviceID == ""
+
 
 - name: Fix data for Team Warp 
   set_fact:
     client_device: "{{ client_device.result }}"
+  when: deviceID == ""
+
+- set_fact:
+    device_id: "{% if deviceID != '' %}{{ deviceID }}{% else %}{{ client_device.id }}{% endif %}"
+    device_token: "{% if tokenID != '' %}{{ tokenID }}{% else %}{{ client_device.token }}{% endif %}"
+
+
 
 - name: Get Device Config
-  ansible.builtin.shell: "curl -X PATCH {{ url }}/v0/reg/{{ client_device.id }} --header 'Authorization: Bearer {{ client_device.token }}' --data '{\"key\":\"{{ wgpub.stdout}}\",\"type\":\"Linux\"}'"
+  ansible.builtin.shell: "curl -X PATCH {{ url }}/v0/reg/{{ device_id }} --header 'Authorization: Bearer {{ device_token }}' --data '{\"key\":\"{{ wgpub.stdout}}\",\"type\":\"Linux\"}'"
   register: device_config
+  when: deviceID == ""
 
 - name: set variables wgcf
   set_fact:
     wgcf: "{{ device_config.stdout | from_json }}"
+  when: deviceID == ""
 
 - name: Fix data for Team Warp 
   set_fact:
     wgcf: "{{ wgcf.result }}"
+  when: deviceID == ""
 
 - name: generate wg config
   become: yes
   ansible.builtin.template:
     src: wireguard.j2
     dest: /etc/wireguard/wgcf.conf
+  when: deviceID == ""
 
 - name: Information
   debug:
